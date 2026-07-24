@@ -22,8 +22,25 @@ if not all([TELEGRAM_TOKEN, GEMINI_API_KEY, RAINDROP_TOKEN]):
         "TELEGRAM_TOKEN, GEMINI_API_KEY, RAINDROP_TOKEN"
     )
 
-
 # --- HELPER FUNCTIONS ---
+
+def get_raindrop_collections() -> Dict[str, int]:
+    """Fetches user's Raindrop collections so Gemini can choose one."""
+    if not RAINDROP_TOKEN:
+        return {}
+    
+    url = "https://api.raindrop.io/rest/v1/collections"
+    headers = {"Authorization": f"Bearer {RAINDROP_TOKEN}"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            items = resp.json().get("items", [])
+            # Returns a dictionary like: {"YouTube Videos": 123456, "Articles": 78910}
+            return {item["title"]: item["_id"] for item in items}
+    except Exception as e:
+        logging.warning("Error fetching collections: %s", e)
+    return {}
+
 
 def extract_youtube_video_id(url: str) -> Optional[str]:
     patterns = [
@@ -123,38 +140,36 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def analyze_with_gemini(url: str, extra_context: str) -> Dict[str, Any]:
-    """Call Gemini Flash to extract clean title, summary, and tags."""
+def analyze_with_gemini(url: str, extra_context: str, available_folders: List[str]) -> Dict[str, Any]:
+    """Call Gemini Flash to extract clean title, summary, tags, and folder choice."""
     if not GEMINI_API_KEY:
-        return {
-            "title": "Saved Link",
-            "excerpt": "Saved via Telegram Bot",
-            "tags": ["telegram", "uncategorized"],
-        }
+        return {"title": "Saved Link", "excerpt": "Saved via Telegram Bot", "tags": ["telegram"], "folder": "Unsorted"}
 
     gemini_endpoint = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         f"gemini-flash-latest:generateContent?key={GEMINI_API_KEY}"
     )
 
+    folders_str = ", ".join(available_folders) if available_folders else "None available (use Unsorted)"
+
     prompt = f"""
 You are an expert bookmark metadata extractor.
 
 Target URL: {url}
-
-Context/Content provided:
-{extra_context if extra_context else "No extra text available."}
+Context provided: {extra_context if extra_context else "No extra text available."}
 
 Task:
-1. Extract or write a clean, exact descriptive title for this link based on the context.
+1. Extract or write a clean, exact descriptive title.
 2. Write a 1-2 sentence concise summary.
 3. Generate 3 to 5 highly relevant, specific lowercase tags.
+4. Choose the BEST matching folder from this exact list of the user's folders: [{folders_str}]. If none fit, return "Unsorted".
 
 Return ONLY a valid JSON object matching this structure:
 {{
   "title": "Exact Clean Title",
   "excerpt": "Short 1-2 sentence description summary.",
-  "tags": ["tag1", "tag2", "tag3"]
+  "tags": ["tag1", "tag2", "tag3"],
+  "folder": "Exact Folder Name"
 }}
 Do not add markdown formatting or markdown blocks.
 """.strip()
@@ -176,43 +191,18 @@ Do not add markdown formatting or markdown blocks.
 
         parsed = _extract_json_from_text(raw_text)
         if not parsed:
-            raise ValueError(f"Could not parse Gemini JSON: {raw_text[:200]}")
+            raise ValueError("Could not parse Gemini JSON")
 
-        title = str(parsed.get("title", "Saved Link")).strip()
-        excerpt = str(parsed.get("excerpt", "Saved via Telegram Bot")).strip()
-        tags = parsed.get("tags", ["telegram", "uncategorized"])
-
-        if not isinstance(tags, list):
-            tags = ["telegram", "uncategorized"]
-
-        cleaned_tags = []
-        for tag in tags:
-            tag_str = str(tag).strip().lower()
-            if tag_str:
-                cleaned_tags.append(tag_str)
-
-        if not cleaned_tags:
-            cleaned_tags = ["telegram", "uncategorized"]
-
-        return {
-            "title": title or "Saved Link",
-            "excerpt": excerpt or "Saved via Telegram Bot",
-            "tags": cleaned_tags[:5],
-        }
+        return parsed
 
     except Exception as e:
         logging.exception("Gemini Processing Error: %s", e)
-        return {
-            "title": "Saved Link",
-            "excerpt": "Saved via Telegram Bot",
-            "tags": ["telegram", "uncategorized"],
-        }
+        return {"title": "Saved Link", "excerpt": "Saved via Telegram", "tags": ["telegram"], "folder": "Unsorted"}
 
 
-def save_to_raindrop(url: str, title: str, excerpt: str, tags: List[str]) -> bool:
-    """Posts bookmark to Raindrop.io with automatic parsing enabled."""
+def save_to_raindrop(url: str, title: str, excerpt: str, tags: List[str], collection_id: int) -> bool:
+    """Posts bookmark to Raindrop.io with automatic parsing and dynamic folder routing."""
     if not RAINDROP_TOKEN:
-        logging.error("RAINDROP_TOKEN is missing")
         return False
 
     raindrop_api = "https://api.raindrop.io/rest/v1/raindrop"
@@ -226,7 +216,7 @@ def save_to_raindrop(url: str, title: str, excerpt: str, tags: List[str]) -> boo
         "excerpt": excerpt,
         "tags": tags,
         "pleaseParse": {},
-        "collection": {"$id": -1},
+        "collection": {"$id": collection_id},
     }
 
     try:
@@ -240,48 +230,53 @@ def save_to_raindrop(url: str, title: str, excerpt: str, tags: List[str]) -> boo
 def reply_telegram(chat_id: int, message: str) -> None:
     """Send confirmation back to Telegram."""
     if not TELEGRAM_TOKEN:
-        logging.error("TELEGRAM_TOKEN is missing")
         return
 
     telegram_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(
-            telegram_api,
-            json={"chat_id": chat_id, "text": message},
-            timeout=15,
-        )
+        requests.post(telegram_api, json={"chat_id": chat_id, "text": message}, timeout=15)
     except Exception as e:
         logging.exception("Telegram send error: %s", e)
 
 
 def process_bookmark(chat_id: int, url: str) -> None:
     """Background execution flow."""
-    extra_context = ""
+    # 1. Fetch User's Folders
+    collections_map = get_raindrop_collections()
+    folder_names = list(collections_map.keys())
 
+    # 2. Get Context
+    extra_context = ""
     url_lower = url.lower()
     if "youtube.com" in url_lower or "youtu.be" in url_lower:
         extra_context = get_youtube_details(url)
     elif "reddit.com" in url_lower:
         extra_context = get_reddit_text(url)
 
-    ai_data = analyze_with_gemini(url, extra_context)
-    title = ai_data.get("title", "Saved Bookmark")
-    excerpt = ai_data.get("excerpt", "")
+    # 3. Analyze with Gemini
+    ai_data = analyze_with_gemini(url, extra_context, folder_names)
+    
+    title = str(ai_data.get("title", "Saved Bookmark")).strip()
+    excerpt = str(ai_data.get("excerpt", "")).strip()
+    folder_choice = str(ai_data.get("folder", "Unsorted")).strip()
+    
     tags = ai_data.get("tags", ["telegram"])
-
     if not isinstance(tags, list):
         tags = ["telegram"]
-
     tags = [str(tag).strip().lower() for tag in tags if str(tag).strip()]
     if not tags:
         tags = ["telegram"]
 
-    success = save_to_raindrop(url, title, excerpt, tags)
+    # 4. Map Folder Name to ID (-1 is the default fallback for Unsorted)
+    collection_id = collections_map.get(folder_choice, -1)
+
+    # 5. Save
+    success = save_to_raindrop(url, title, excerpt, tags, collection_id)
 
     if success:
         reply_telegram(
             chat_id,
-            f"✅ Saved to Raindrop!\n\n📌 Title: {title}\n📝 Summary: {excerpt}\n🏷️ Tags: {', '.join(tags)}",
+            f"✅ Saved to Raindrop!\n\n📌 Title: {title}\n📁 Folder: {folder_choice}\n📝 Summary: {excerpt}\n🏷️ Tags: {', '.join(tags)}",
         )
     else:
         reply_telegram(chat_id, "❌ Failed to save bookmark to Raindrop.")
