@@ -35,11 +35,44 @@ def get_raindrop_collections() -> Dict[str, int]:
         resp = requests.get(url, headers=headers, timeout=10)
         if resp.status_code == 200:
             items = resp.json().get("items", [])
-            # Returns a dictionary like: {"YouTube Videos": 123456, "Articles": 78910}
             return {item["title"]: item["_id"] for item in items}
     except Exception as e:
         logging.warning("Error fetching collections: %s", e)
     return {}
+
+
+def search_raindrop(query: str) -> str:
+    """Searches entire Raindrop library across titles, tags, URLs, and descriptions."""
+    if not RAINDROP_TOKEN:
+        return "❌ Raindrop token is missing."
+    
+    # Collection '0' searches across all collections
+    url = "https://api.raindrop.io/rest/v1/raindrops/0"
+    headers = {"Authorization": f"Bearer {RAINDROP_TOKEN}"}
+    params = {
+        "search": query, 
+        "perpage": 5  # Return top 5 matches
+    }
+    
+    try:
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        if resp.status_code == 200:
+            items = resp.json().get("items", [])
+            
+            if not items:
+                return f"🤷‍♂️ No bookmarks found for '{query}'"
+            
+            reply_text = f"🔍 Top results for '{query}':\n\n"
+            for idx, item in enumerate(items, 1):
+                title = item.get("title", "Untitled Bookmark")
+                link = item.get("link", "")
+                reply_text += f"{idx}. {title}\n🔗 {link}\n\n"
+                
+            return reply_text.strip()
+    except Exception as e:
+        logging.warning("Error searching Raindrop: %s", e)
+        
+    return "❌ Error searching Raindrop."
 
 
 def extract_youtube_video_id(url: str) -> Optional[str]:
@@ -116,20 +149,17 @@ def get_reddit_text(url: str) -> str:
 def get_website_metadata(url: str) -> str:
     """Fetches title and description from general web pages (Instagram, Twitter, Blogs, etc.)."""
     try:
-        # Spoofing a Facebook/WhatsApp crawler forces sites like Instagram to return preview data
         headers = {"User-Agent": "facebookexternalhit/1.1"}
         resp = requests.get(url, headers=headers, timeout=5)
         
         if resp.status_code == 200:
             html = resp.text
             
-            # Extract OpenGraph Title (usually contains IG caption or exact title)
             title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html)
             if not title_match:
                 title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
             title = title_match.group(1).strip() if title_match else ""
             
-            # Extract OpenGraph Description
             desc_match = re.search(r'<meta\s+(?:property="og:description"|name="description")\s+content="([^"]+)"', html, re.IGNORECASE)
             desc = desc_match.group(1).strip() if desc_match else ""
 
@@ -261,7 +291,7 @@ def save_to_raindrop(url: str, title: str, excerpt: str, tags: List[str], collec
 
 
 def reply_telegram(chat_id: int, message: str) -> None:
-    """Send confirmation back to Telegram."""
+    """Send message back to Telegram."""
     if not TELEGRAM_TOKEN:
         return
 
@@ -273,12 +303,10 @@ def reply_telegram(chat_id: int, message: str) -> None:
 
 
 def process_bookmark(chat_id: int, url: str) -> None:
-    """Background execution flow."""
-    # 1. Fetch User's Folders
+    """Background execution flow for saving bookmarks."""
     collections_map = get_raindrop_collections()
     folder_names = list(collections_map.keys())
 
-    # 2. Get Context
     extra_context = ""
     url_lower = url.lower()
     if "youtube.com" in url_lower or "youtu.be" in url_lower:
@@ -286,10 +314,8 @@ def process_bookmark(chat_id: int, url: str) -> None:
     elif "reddit.com" in url_lower:
         extra_context = get_reddit_text(url)
     else:
-        # Fallback for Instagram, Twitter, News Articles, Blogs, etc.
         extra_context = get_website_metadata(url)
 
-    # 3. Analyze with Gemini
     ai_data = analyze_with_gemini(url, extra_context, folder_names)
     
     title = str(ai_data.get("title", "Saved Bookmark")).strip()
@@ -303,10 +329,7 @@ def process_bookmark(chat_id: int, url: str) -> None:
     if not tags:
         tags = ["telegram"]
 
-    # 4. Map Folder Name to ID (-1 is the default fallback for Unsorted)
     collection_id = collections_map.get(folder_choice, -1)
-
-    # 5. Save
     success = save_to_raindrop(url, title, excerpt, tags, collection_id)
 
     if success:
@@ -333,9 +356,22 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         chat_id = data["message"]["chat"]["id"]
         text = data["message"]["text"].strip()
 
+        # 1. SEARCH COMMAND: e.g., "/search python" or "/search #podcast"
+        if text.lower().startswith(("/search", "/find")):
+            parts = text.split(" ", 1)
+            if len(parts) > 1 and parts[1].strip():
+                query = parts[1].strip()
+                results = search_raindrop(query)
+                reply_telegram(chat_id, results)
+            else:
+                reply_telegram(chat_id, "ℹ️ Usage: `/search <keyword or #tag>`")
+            return {"status": "ok"}
+
+        # 2. SAVE URL COMMAND
         url_match = re.search(r"https?://\S+", text)
         if url_match:
             url = url_match.group(0).rstrip(").,]")
             background_tasks.add_task(process_bookmark, chat_id, url)
+            return {"status": "ok"}
 
     return {"status": "ok"}
