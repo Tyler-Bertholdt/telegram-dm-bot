@@ -85,7 +85,7 @@ def analyze_with_gemini(url: str, extra_context: str) -> dict:
 
 def save_to_raindrop(url: str, title: str, tags: list) -> bool:
     """Posts the formatted bookmark to Raindrop.io API."""
-    raindrop_api = "[https://api.raindrop.io/rest/v1/raindrop](https://api.raindrop.io/rest/v1/raindrop)"
+    raindrop_api = "https://api.raindrop.io/rest/v1/raindrop"
     headers = {
         "Authorization": f"Bearer {RAINDROP_TOKEN}",
         "Content-Type": "application/json"
@@ -103,7 +103,7 @@ def save_to_raindrop(url: str, title: str, tags: list) -> bool:
 
 def reply_telegram(chat_id: int, message: str):
     """Sends confirmation text back to the Telegram chat."""
-    telegram_api = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/sendMessage"
+    telegram_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     requests.post(telegram_api, json={"chat_id": chat_id, "text": message})
 
 
