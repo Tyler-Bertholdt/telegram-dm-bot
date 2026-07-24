@@ -113,6 +113,39 @@ def get_reddit_text(url: str) -> str:
     return ""
 
 
+def get_website_metadata(url: str) -> str:
+    """Fetches title and description from general web pages (Instagram, Twitter, Blogs, etc.)."""
+    try:
+        # Spoofing a Facebook/WhatsApp crawler forces sites like Instagram to return preview data
+        headers = {"User-Agent": "facebookexternalhit/1.1"}
+        resp = requests.get(url, headers=headers, timeout=5)
+        
+        if resp.status_code == 200:
+            html = resp.text
+            
+            # Extract OpenGraph Title (usually contains IG caption or exact title)
+            title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html)
+            if not title_match:
+                title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+            title = title_match.group(1).strip() if title_match else ""
+            
+            # Extract OpenGraph Description
+            desc_match = re.search(r'<meta\s+(?:property="og:description"|name="description")\s+content="([^"]+)"', html, re.IGNORECASE)
+            desc = desc_match.group(1).strip() if desc_match else ""
+
+            parts = []
+            if title: 
+                parts.append(f"Webpage Title: {title}")
+            if desc: 
+                parts.append(f"Webpage Description: {desc}")
+            
+            return "\n".join(parts)
+    except Exception as e:
+        logging.warning("Website metadata fetch error: %s", e)
+        
+    return ""
+
+
 def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
     """Best-effort JSON extraction from Gemini text output."""
     text = text.strip()
@@ -252,6 +285,9 @@ def process_bookmark(chat_id: int, url: str) -> None:
         extra_context = get_youtube_details(url)
     elif "reddit.com" in url_lower:
         extra_context = get_reddit_text(url)
+    else:
+        # Fallback for Instagram, Twitter, News Articles, Blogs, etc.
+        extra_context = get_website_metadata(url)
 
     # 3. Analyze with Gemini
     ai_data = analyze_with_gemini(url, extra_context, folder_names)
