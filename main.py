@@ -2,7 +2,7 @@ import os
 import re
 import json
 import requests
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from youtube_transcript_api import YouTubeTranscriptApi
 
 app = FastAPI()
@@ -48,7 +48,7 @@ def get_reddit_text(url: str) -> str:
 
 def analyze_with_gemini(url: str, extra_context: str) -> dict:
     """Calls the Gemini API to analyze link content and extract clean title + tags."""
-    gemini_endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    gemini_endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={GEMINI_API_KEY}"
     
     prompt = f"""
     You are a bookmark classification assistant.
@@ -97,7 +97,7 @@ def save_to_raindrop(url: str, title: str, tags: list) -> bool:
         "collection": {"$id": -1}  # -1 saves to 'Unsorted'
     }
     
-    resp = requests.post(raindrop_api, json=payload, headers=headers, timeout=5)
+    resp = requests.post(raindrop_api, json=payload, headers=headers, timeout=10)
     return resp.status_code == 200
 
 
@@ -105,6 +105,26 @@ def reply_telegram(chat_id: int, message: str):
     """Sends confirmation text back to the Telegram chat."""
     telegram_api = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_TOKEN}/sendMessage"
     requests.post(telegram_api, json={"chat_id": chat_id, "text": message})
+
+
+def process_bookmark(chat_id: int, url: str):
+    """Background task to fetch context, call Gemini AI, and save to Raindrop."""
+    extra_context = ""
+    if "youtube.com" in url or "youtu.be" in url:
+        extra_context = get_youtube_text(url)
+    elif "reddit.com" in url:
+        extra_context = get_reddit_text(url)
+
+    ai_data = analyze_with_gemini(url, extra_context)
+    title = ai_data.get("title", "Saved Link")
+    tags = ai_data.get("tags", ["Telegram"])
+
+    success = save_to_raindrop(url, title, tags)
+
+    if success:
+        reply_telegram(chat_id, f"✅ Saved to Raindrop!\n📌 Title: {title}\n🏷️ Tags: {', '.join(tags)}")
+    else:
+        reply_telegram(chat_id, "❌ Failed to save bookmark to Raindrop.")
 
 
 # --- WEBHOOK ENDPOINTS ---
@@ -115,38 +135,18 @@ def home():
 
 
 @app.post("/webhook")
-async def telegram_webhook(request: Request):
-    """Listens for webhooks pushed from Telegram."""
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Listens for webhooks from Telegram and delegates tasks to the background."""
     data = await request.json()
 
     if "message" in data and "text" in data["message"]:
         chat_id = data["message"]["chat"]["id"]
         text = data["message"]["text"].strip()
 
-        # Check if text contains a URL
         url_match = re.search(r"https?://\S+", text)
         if url_match:
             url = url_match.group(0)
-            
-            # 1. Scrape context based on domain
-            extra_context = ""
-            if "youtube.com" in url or "youtu.be" in url:
-                extra_context = get_youtube_text(url)
-            elif "reddit.com" in url:
-                extra_context = get_reddit_text(url)
-
-            # 2. Process with Gemini
-            ai_data = analyze_with_gemini(url, extra_context)
-            title = ai_data.get("title", "Saved Link")
-            tags = ai_data.get("tags", ["Telegram"])
-
-            # 3. Save to Raindrop
-            success = save_to_raindrop(url, title, tags)
-
-            # 4. Notify user on Telegram
-            if success:
-                reply_telegram(chat_id, f"✅ Saved to Raindrop!\n📌 Title: {title}\n🏷️ Tags: {', '.join(tags)}")
-            else:
-                reply_telegram(chat_id, "❌ Failed to save bookmark to Raindrop.")
+            # Add long-running operations to background execution
+            background_tasks.add_task(process_bookmark, chat_id, url)
 
     return {"status": "ok"}
