@@ -46,12 +46,11 @@ def search_raindrop(query: str) -> str:
     if not RAINDROP_TOKEN:
         return "❌ Raindrop token is missing."
     
-    # Collection '0' searches across all collections
     url = "https://api.raindrop.io/rest/v1/raindrops/0"
     headers = {"Authorization": f"Bearer {RAINDROP_TOKEN}"}
     params = {
         "search": query, 
-        "perpage": 5  # Return top 5 matches
+        "perpage": 5
     }
     
     try:
@@ -92,33 +91,23 @@ def extract_youtube_video_id(url: str) -> Optional[str]:
 def get_youtube_details(url: str) -> str:
     """Fetch YouTube title, channel, and transcript snippet if available."""
     context_parts: List[str] = []
-
     try:
-        res = requests.get(
-            "https://www.youtube.com/oembed",
-            params={"url": url, "format": "json"},
-            timeout=5,
-        )
+        res = requests.get("https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            title = data.get("title")
-            author = data.get("author_name")
-            if title:
-                context_parts.append(f"Video Title: {title}")
-            if author:
-                context_parts.append(f"Channel: {author}")
-    except Exception as e:
-        logging.warning("YouTube oEmbed error: %s", e)
+            if data.get("title"): context_parts.append(f"Video Title: {data.get('title')}")
+            if data.get("author_name"): context_parts.append(f"Channel: {data.get('author_name')}")
+    except Exception:
+        pass
 
     video_id = extract_youtube_video_id(url)
     if video_id:
         try:
             transcript = YouTubeTranscriptApi.get_transcript(video_id)
             text = " ".join(item.get("text", "") for item in transcript[:40]).strip()
-            if text:
-                context_parts.append(f"Transcript Snippet: {text}")
+            if text: context_parts.append(f"Transcript Snippet: {text}")
         except Exception:
-            context_parts.append("Transcript: Not available for this video.")
+            context_parts.append("Transcript: Not available.")
 
     return "\n".join(context_parts) if context_parts else "YouTube Video"
 
@@ -127,86 +116,60 @@ def get_reddit_text(url: str) -> str:
     """Fetch Reddit title and body via public JSON endpoint."""
     try:
         clean_url = url.split("?")[0].rstrip("/") + ".json"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+        headers = {"User-Agent": "Mozilla/5.0"}
         resp = requests.get(clean_url, headers=headers, timeout=5)
         if resp.status_code == 200:
-            data = resp.json()
-            post = data[0]["data"]["children"][0]["data"]
-            title = post.get("title", "")
-            selftext = post.get("selftext", "")[:500]
+            post = resp.json()[0]["data"]["children"][0]["data"]
             parts = []
-            if title:
-                parts.append(f"Reddit Post Title: {title}")
-            if selftext:
-                parts.append(f"Post Body: {selftext}")
+            if post.get("title"): parts.append(f"Reddit Post Title: {post.get('title')}")
+            if post.get("selftext"): parts.append(f"Post Body: {post.get('selftext')[:500]}")
             return "\n".join(parts)
-    except Exception as e:
-        logging.warning("Reddit fetch error: %s", e)
-
+    except Exception:
+        pass
     return ""
 
 
 def get_website_metadata(url: str) -> str:
-    """Fetches title and description using Microlink API to bypass blocks (Instagram, Twitter, etc.)."""
+    """Fetches title and description using Microlink API."""
     try:
-        api_url = f"https://api.microlink.io?url={url}"
-        resp = requests.get(api_url, timeout=10)
-        
+        resp = requests.get(f"https://api.microlink.io?url={url}", timeout=10)
         if resp.status_code == 200:
             data = resp.json().get("data", {})
-            title = data.get("title", "")
-            desc = data.get("description", "")
-            
             parts = []
-            if title: 
-                parts.append(f"Webpage Title: {title}")
-            if desc: 
-                parts.append(f"Webpage Description: {desc}")
-            
+            if data.get("title"): parts.append(f"Webpage Title: {data.get('title')}")
+            if data.get("description"): parts.append(f"Webpage Description: {data.get('description')}")
             return "\n".join(parts)
-    except Exception as e:
-        logging.warning("Website metadata fetch error: %s", e)
-        
+    except Exception:
+        pass
     return ""
 
 
 def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
-    """Best-effort JSON extraction from Gemini text output."""
     text = text.strip()
     text = re.sub(r"^\s*```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```\s*$", "", text)
-
     try:
         parsed = json.loads(text)
-        if isinstance(parsed, dict):
-            return parsed
+        if isinstance(parsed, dict): return parsed
     except Exception:
         pass
-
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        snippet = text[start : end + 1]
         try:
-            parsed = json.loads(snippet)
-            if isinstance(parsed, dict):
-                return parsed
+            parsed = json.loads(text[start : end + 1])
+            if isinstance(parsed, dict): return parsed
         except Exception:
             return None
-
     return None
 
 
 def analyze_with_gemini(url: str, extra_context: str, available_folders: List[str]) -> Dict[str, Any]:
-    """Call Gemini Flash to extract clean title, summary, tags, and folder choice."""
+    """Call Gemini to extract title, summary, notes, tags, and folder."""
     if not GEMINI_API_KEY:
-        return {"title": "Saved Link", "excerpt": "Saved via Telegram Bot", "tags": ["telegram"], "folder": "Unsorted"}
+        return {"title": "Saved Link", "excerpt": "Saved via Telegram", "note": "", "tags": ["telegram"], "folder": "Unsorted"}
 
-    gemini_endpoint = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-flash-latest:generateContent?key={GEMINI_API_KEY}"
-    )
-
+    gemini_endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={GEMINI_API_KEY}"
     folders_str = ", ".join(available_folders) if available_folders else "None available (use Unsorted)"
 
     prompt = f"""
@@ -217,67 +180,53 @@ Context provided: {extra_context if extra_context else "No extra text available.
 
 Task:
 1. Extract or write a clean, exact descriptive title.
-2. Write a 1-2 sentence concise summary.
-3. Generate 3 to 5 highly relevant, specific lowercase tags.
-4. Choose the BEST matching folder from this exact list of the user's folders: [{folders_str}]. If none fit, return "Unsorted".
+2. Write a short 1-2 sentence description (excerpt).
+3. Write a longer 'note' field with detailed insights, bullet points, or key takeaways. You can use markdown formatting here.
+4. Generate 3 to 5 highly relevant, specific lowercase tags.
+5. Choose the BEST matching folder from this exact list: [{folders_str}]. If none fit, return "Unsorted".
 
 Return ONLY a valid JSON object matching this structure:
 {{
   "title": "Exact Clean Title",
   "excerpt": "Short 1-2 sentence description summary.",
+  "note": "Detailed markdown notes or key takeaways about this link.",
   "tags": ["tag1", "tag2", "tag3"],
   "folder": "Exact Folder Name"
 }}
-Do not add markdown formatting or markdown blocks.
 """.strip()
 
-    headers = {"Content-Type": "application/json"}
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
-
     try:
-        res = requests.post(gemini_endpoint, json=payload, headers=headers, timeout=15)
+        res = requests.post(gemini_endpoint, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
         res.raise_for_status()
-        data = res.json()
-
-        raw_text = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [{}])[0]
-            .get("text", "")
-        ).strip()
-
+        raw_text = res.json().get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+        
         parsed = _extract_json_from_text(raw_text)
-        if not parsed:
-            raise ValueError("Could not parse Gemini JSON")
-
+        if not parsed: raise ValueError("Could not parse Gemini JSON")
         return parsed
-
     except Exception as e:
         logging.exception("Gemini Processing Error: %s", e)
-        return {"title": "Saved Link", "excerpt": "Saved via Telegram", "tags": ["telegram"], "folder": "Unsorted"}
+        return {"title": "Saved Link", "excerpt": "Saved via Telegram", "note": "", "tags": ["telegram"], "folder": "Unsorted"}
 
 
-def save_to_raindrop(url: str, title: str, excerpt: str, tags: List[str], collection_id: int) -> bool:
-    """Posts bookmark to Raindrop.io with automatic parsing and dynamic folder routing."""
+def save_to_raindrop(url: str, title: str, excerpt: str, note: str, tags: List[str], collection_id: int) -> bool:
+    """Posts bookmark to Raindrop.io with automatic parsing and notes."""
     if not RAINDROP_TOKEN:
         return False
 
-    raindrop_api = "https://api.raindrop.io/rest/v1/raindrop"
-    headers = {
-        "Authorization": f"Bearer {RAINDROP_TOKEN}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Bearer {RAINDROP_TOKEN}", "Content-Type": "application/json"}
     payload = {
         "link": url,
         "title": title,
         "excerpt": excerpt,
+        "note": note,  # <--- Added Note Field
         "tags": tags,
         "pleaseParse": {},
         "collection": {"$id": collection_id},
     }
 
     try:
-        resp = requests.post(raindrop_api, json=payload, headers=headers, timeout=15)
+        resp = requests.post("https://api.raindrop.io/rest/v1/raindrop", json=payload, headers=headers, timeout=15)
         return resp.status_code in (200, 201)
     except Exception as e:
         logging.exception("Raindrop Exception: %s", e)
@@ -285,55 +234,40 @@ def save_to_raindrop(url: str, title: str, excerpt: str, tags: List[str], collec
 
 
 def reply_telegram(chat_id: int, message: str) -> None:
-    """Send message back to Telegram."""
-    if not TELEGRAM_TOKEN:
-        return
-
-    telegram_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    if not TELEGRAM_TOKEN: return
     try:
-        requests.post(telegram_api, json={"chat_id": chat_id, "text": message}, timeout=15)
-    except Exception as e:
-        logging.exception("Telegram send error: %s", e)
+        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": message}, timeout=15)
+    except Exception:
+        pass
 
 
 def process_bookmark(chat_id: int, url: str) -> None:
-    """Background execution flow for saving bookmarks."""
     collections_map = get_raindrop_collections()
-    folder_names = list(collections_map.keys())
-
+    
     extra_context = ""
     url_lower = url.lower()
-    if "youtube.com" in url_lower or "youtu.be" in url_lower:
-        extra_context = get_youtube_details(url)
-    elif "reddit.com" in url_lower:
-        extra_context = get_reddit_text(url)
-    else:
-        extra_context = get_website_metadata(url)
+    if "youtube.com" in url_lower or "youtu.be" in url_lower: extra_context = get_youtube_details(url)
+    elif "reddit.com" in url_lower: extra_context = get_reddit_text(url)
+    else: extra_context = get_website_metadata(url)
 
-    ai_data = analyze_with_gemini(url, extra_context, folder_names)
+    ai_data = analyze_with_gemini(url, extra_context, list(collections_map.keys()))
     
     title = str(ai_data.get("title", "Saved Bookmark")).strip()
     excerpt = str(ai_data.get("excerpt", "")).strip()
+    note = str(ai_data.get("note", "")).strip()
     folder_choice = str(ai_data.get("folder", "Unsorted")).strip()
     
     tags = ai_data.get("tags", ["telegram"])
-    if not isinstance(tags, list):
-        tags = ["telegram"]
+    if not isinstance(tags, list): tags = ["telegram"]
     tags = [str(tag).strip().lower() for tag in tags if str(tag).strip()]
-    if not tags:
-        tags = ["telegram"]
 
-    collection_id = collections_map.get(folder_choice, -1)
-    success = save_to_raindrop(url, title, excerpt, tags, collection_id)
+    success = save_to_raindrop(url, title, excerpt, note, tags, collections_map.get(folder_choice, -1))
 
     if success:
-        reply_telegram(
-            chat_id,
-            f"✅ Saved to Raindrop!\n\n📌 Title: {title}\n📁 Folder: {folder_choice}\n📝 Summary: {excerpt}\n🏷️ Tags: {', '.join(tags)}",
-        )
+        msg = f"✅ Saved to Raindrop!\n\n📌 Title: {title}\n📁 Folder: {folder_choice}\n📝 Summary: {excerpt}\n🏷️ Tags: {', '.join(tags)}"
+        reply_telegram(chat_id, msg)
     else:
         reply_telegram(chat_id, "❌ Failed to save bookmark to Raindrop.")
-
 
 # --- ENDPOINTS ---
 
@@ -341,31 +275,24 @@ def process_bookmark(chat_id: int, url: str) -> None:
 def home():
     return {"status": "Bot is active!"}
 
-
 @app.post("/webhook")
 async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
     data = await request.json()
-
     if "message" in data and "text" in data["message"]:
         chat_id = data["message"]["chat"]["id"]
         text = data["message"]["text"].strip()
 
-        # 1. SEARCH COMMAND: e.g., "/search python" or "/search #podcast"
         if text.lower().startswith(("/search", "/find")):
             parts = text.split(" ", 1)
             if len(parts) > 1 and parts[1].strip():
-                query = parts[1].strip()
-                results = search_raindrop(query)
-                reply_telegram(chat_id, results)
+                reply_telegram(chat_id, search_raindrop(parts[1].strip()))
             else:
                 reply_telegram(chat_id, "ℹ️ Usage: `/search <keyword or #tag>`")
             return {"status": "ok"}
 
-        # 2. SAVE URL COMMAND
         url_match = re.search(r"https?://\S+", text)
         if url_match:
-            url = url_match.group(0).rstrip(").,]")
-            background_tasks.add_task(process_bookmark, chat_id, url)
+            background_tasks.add_task(process_bookmark, chat_id, url_match.group(0).rstrip(").,]"))
             return {"status": "ok"}
 
     return {"status": "ok"}
