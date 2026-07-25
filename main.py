@@ -25,10 +25,8 @@ if not all([TELEGRAM_TOKEN, GEMINI_API_KEY, RAINDROP_TOKEN]):
 # --- HELPER FUNCTIONS ---
 
 def get_raindrop_collections() -> Dict[str, int]:
-    """Fetches user's Raindrop collections so Gemini can choose one."""
     if not RAINDROP_TOKEN:
         return {}
-    
     url = "https://api.raindrop.io/rest/v1/collections"
     headers = {"Authorization": f"Bearer {RAINDROP_TOKEN}"}
     try:
@@ -40,39 +38,27 @@ def get_raindrop_collections() -> Dict[str, int]:
         logging.warning("Error fetching collections: %s", e)
     return {}
 
-
 def search_raindrop(query: str) -> str:
-    """Searches entire Raindrop library across titles, tags, URLs, and descriptions."""
     if not RAINDROP_TOKEN:
         return "❌ Raindrop token is missing."
-    
     url = "https://api.raindrop.io/rest/v1/raindrops/0"
     headers = {"Authorization": f"Bearer {RAINDROP_TOKEN}"}
-    params = {
-        "search": query, 
-        "perpage": 5
-    }
-    
+    params = {"search": query, "perpage": 5}
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         if resp.status_code == 200:
             items = resp.json().get("items", [])
-            
             if not items:
                 return f"🤷‍♂️ No bookmarks found for '{query}'"
-            
             reply_text = f"🔍 Top results for '{query}':\n\n"
             for idx, item in enumerate(items, 1):
                 title = item.get("title", "Untitled Bookmark")
                 link = item.get("link", "")
                 reply_text += f"{idx}. {title}\n🔗 {link}\n\n"
-                
             return reply_text.strip()
     except Exception as e:
         logging.warning("Error searching Raindrop: %s", e)
-        
     return "❌ Error searching Raindrop."
-
 
 def extract_youtube_video_id(url: str) -> Optional[str]:
     patterns = [
@@ -87,9 +73,7 @@ def extract_youtube_video_id(url: str) -> Optional[str]:
             return match.group(1)
     return None
 
-
 def get_youtube_details(url: str) -> str:
-    """Fetch YouTube title, channel, and transcript snippet if available."""
     context_parts: List[str] = []
     try:
         res = requests.get("https://www.youtube.com/oembed", params={"url": url, "format": "json"}, timeout=5)
@@ -108,12 +92,9 @@ def get_youtube_details(url: str) -> str:
             if text: context_parts.append(f"Transcript Snippet: {text}")
         except Exception:
             context_parts.append("Transcript: Not available.")
-
     return "\n".join(context_parts) if context_parts else "YouTube Video"
 
-
 def get_reddit_text(url: str) -> str:
-    """Fetch Reddit title and body via public JSON endpoint."""
     try:
         clean_url = url.split("?")[0].rstrip("/") + ".json"
         headers = {"User-Agent": "Mozilla/5.0"}
@@ -128,9 +109,7 @@ def get_reddit_text(url: str) -> str:
         pass
     return ""
 
-
 def get_website_metadata(url: str) -> str:
-    """Fetches title and description using Microlink API."""
     try:
         resp = requests.get(f"https://api.microlink.io?url={url}", timeout=10)
         if resp.status_code == 200:
@@ -142,7 +121,6 @@ def get_website_metadata(url: str) -> str:
     except Exception:
         pass
     return ""
-
 
 def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
     text = text.strip()
@@ -163,9 +141,7 @@ def _extract_json_from_text(text: str) -> Optional[Dict[str, Any]]:
             return None
     return None
 
-
 def analyze_with_gemini(url: str, extra_context: str, available_folders: List[str]) -> Dict[str, Any]:
-    """Call Gemini to extract title, summary, notes, tags, and folder."""
     if not GEMINI_API_KEY:
         return {"title": "Saved Link", "excerpt": "Saved via Telegram", "note": "", "tags": ["telegram"], "folder": "Unsorted"}
 
@@ -181,7 +157,7 @@ Context provided: {extra_context if extra_context else "No extra text available.
 Task:
 1. Extract or write a clean, exact descriptive title.
 2. Write a short 1-2 sentence description (excerpt).
-3. Write a longer 'note' field with detailed insights, bullet points, or key takeaways. You can use markdown formatting here.
+3. Write a 'note' field using Markdown bullet points. Keep it strictly between 2 to 4 lines maximum. **IMPORTANT: You must strictly escape newlines as \\n inside the JSON string to prevent parsing errors.**
 4. Generate 3 to 5 highly relevant, specific lowercase tags.
 5. Choose the BEST matching folder from this exact list: [{folders_str}]. If none fit, return "Unsorted".
 
@@ -189,13 +165,19 @@ Return ONLY a valid JSON object matching this structure:
 {{
   "title": "Exact Clean Title",
   "excerpt": "Short 1-2 sentence description summary.",
-  "note": "Detailed markdown notes or key takeaways about this link.",
+  "note": "- Point 1\\n- Point 2\\n- Point 3",
   "tags": ["tag1", "tag2", "tag3"],
   "folder": "Exact Folder Name"
 }}
 """.strip()
 
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.0
+        }
+    }
+    
     try:
         res = requests.post(gemini_endpoint, json=payload, headers={"Content-Type": "application/json"}, timeout=15)
         res.raise_for_status()
@@ -208,23 +190,19 @@ Return ONLY a valid JSON object matching this structure:
         logging.exception("Gemini Processing Error: %s", e)
         return {"title": "Saved Link", "excerpt": "Saved via Telegram", "note": "", "tags": ["telegram"], "folder": "Unsorted"}
 
-
 def save_to_raindrop(url: str, title: str, excerpt: str, note: str, tags: List[str], collection_id: int) -> bool:
-    """Posts bookmark to Raindrop.io with automatic parsing and notes."""
     if not RAINDROP_TOKEN:
         return False
-
     headers = {"Authorization": f"Bearer {RAINDROP_TOKEN}", "Content-Type": "application/json"}
     payload = {
         "link": url,
         "title": title,
         "excerpt": excerpt,
-        "note": note,  # <--- Added Note Field
+        "note": note,
         "tags": tags,
         "pleaseParse": {},
         "collection": {"$id": collection_id},
     }
-
     try:
         resp = requests.post("https://api.raindrop.io/rest/v1/raindrop", json=payload, headers=headers, timeout=15)
         return resp.status_code in (200, 201)
@@ -232,14 +210,12 @@ def save_to_raindrop(url: str, title: str, excerpt: str, note: str, tags: List[s
         logging.exception("Raindrop Exception: %s", e)
         return False
 
-
 def reply_telegram(chat_id: int, message: str) -> None:
     if not TELEGRAM_TOKEN: return
     try:
         requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", json={"chat_id": chat_id, "text": message}, timeout=15)
     except Exception:
         pass
-
 
 def process_bookmark(chat_id: int, url: str) -> None:
     collections_map = get_raindrop_collections()
@@ -294,5 +270,4 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         if url_match:
             background_tasks.add_task(process_bookmark, chat_id, url_match.group(0).rstrip(").,]"))
             return {"status": "ok"}
-
     return {"status": "ok"}
