@@ -147,22 +147,16 @@ def get_reddit_text(url: str) -> str:
 
 
 def get_website_metadata(url: str) -> str:
-    """Fetches title and description from general web pages (Instagram, Twitter, Blogs, etc.)."""
+    """Fetches title and description using Microlink API to bypass blocks (Instagram, Twitter, etc.)."""
     try:
-        headers = {"User-Agent": "facebookexternalhit/1.1"}
-        resp = requests.get(url, headers=headers, timeout=5)
+        api_url = f"https://api.microlink.io?url={url}"
+        resp = requests.get(api_url, timeout=10)
         
         if resp.status_code == 200:
-            html = resp.text
+            data = resp.json().get("data", {})
+            title = data.get("title", "")
+            desc = data.get("description", "")
             
-            title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html)
-            if not title_match:
-                title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-            title = title_match.group(1).strip() if title_match else ""
-            
-            desc_match = re.search(r'<meta\s+(?:property="og:description"|name="description")\s+content="([^"]+)"', html, re.IGNORECASE)
-            desc = desc_match.group(1).strip() if desc_match else ""
-
             parts = []
             if title: 
                 parts.append(f"Webpage Title: {title}")
