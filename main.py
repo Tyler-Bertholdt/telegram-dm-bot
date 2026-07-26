@@ -1,3 +1,4 @@
+# --- .main ---
 import os
 import re
 import json
@@ -7,7 +8,8 @@ from typing import Any, Dict, List, Optional
 import requests
 from fastapi import FastAPI, Request, BackgroundTasks
 from youtube_transcript_api import YouTubeTranscriptApi
-
+# --- .startpoint ---
+# ''' Emojis ❌ ✅🙅🏻‍♀️ ☁️🌧️'''
 app = FastAPI()
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -22,7 +24,7 @@ if not all([TELEGRAM_TOKEN, GEMINI_API_KEY, RAINDROP_TOKEN]):
         "TELEGRAM_TOKEN, GEMINI_API_KEY, RAINDROP_TOKEN"
     )
 
-# --- HELPER FUNCTIONS ---
+# ---.function point---
 
 def get_raindrop_collections() -> Dict[str, int]:
     if not RAINDROP_TOKEN:
@@ -153,7 +155,7 @@ You are an expert bookmark metadata extractor.
 
 Target URL: {url}
 Context provided: {extra_context if extra_context else "No extra text available."}
-
+# Ai Prompt
 Task:
 1. Extract or write a clean, exact descriptive title.
 2. Write a short 1-2 sentence description (excerpt).
@@ -244,9 +246,7 @@ def process_bookmark(chat_id: int, url: str) -> None:
         reply_telegram(chat_id, msg)
     else:
         reply_telegram(chat_id, "❌ Failed to save bookmark to Raindrop.")
-
-# --- ENDPOINTS ---
-
+# ---.endpoint---
 @app.get("/")
 def home():
     return {"status": "Bot is active!"}
