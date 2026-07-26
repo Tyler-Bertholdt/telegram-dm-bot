@@ -1,2 +1,2 @@
 # telegram-dm-bot
-for email ai integration
+For Using Raindrop Integration
