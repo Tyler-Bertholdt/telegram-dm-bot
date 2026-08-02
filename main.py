@@ -29,11 +29,11 @@ HELP_TEXT = """
 **📌 Core Features:**
 • **Paste any URL**: Saved, summarized, and categorized automatically.
 • **File Uploads**: Send `.txt` or `.md` files directly to summarize document content.
-• **Smart Search**: Use `/search` for NLP-driven search with fuzzy tag suggestions.
+• **Smart Search**: Use `/search` with NLP fuzzy tag suggestions and custom result limits.
 
 **💬 Available Commands:**
 • `/help` or `/start` - Show this guide.
-• `/search <keyword or #tag>` - Search bookmarks with tag recommendations.
+• `/search <query> [/result <1-50>]` - Search bookmarks (e.g. `/search python /result 10`).
 • `/link <url>` - Manually set the main bookmark link URL.
 • `/folder <folder_name>` - Pick or auto-create a Raindrop collection.
 • `/text <your text>` - Add priority text/context (URLs here stay inside notes).
@@ -57,14 +57,14 @@ HELP_TEXT = """
 4. **File Processing**: Text inside uploaded `.txt` / `.md` files is merged directly into AI context.
 
 **💡 Usage Examples:**
-1. Custom Prompt + Word Limit:
+1. Search with Custom Result Count:
+   `/search python /result 10`
+
+2. Custom Prompt + Word Limit:
    `youtube.com/watch?v=xyz /folder Tech /prompt Focus on coding tips /limit 25`
 
-2. Manual Tags Override:
+3. Manual Tags Override:
    `https://github.com /tags dev, tools $no-tags` *(Only saves 'dev' and 'tools')*
-
-3. Document Upload:
-   Upload `notes.md` with caption `/folder Research /tags AI`
 """
 
 # --- Raindrop Helpers ---
@@ -121,14 +121,25 @@ def get_raindrop_tags() -> List[str]:
         logging.warning("Error fetching Raindrop tags: %s", e)
     return []
 
-def search_raindrop(query: str) -> str:
+def search_raindrop(query_text: str) -> str:
     if not RAINDROP_TOKEN:
         return "❌ Raindrop token is missing."
     
-    clean_query = query.strip()
+    # Parse /result <num> or /limit <num> parameter if provided
+    perpage = 5  # default
+    result_match = re.search(r"/(?:result|results|limit|count)\s+(\d+)", query_text, re.IGNORECASE)
+    if result_match:
+        perpage = min(max(int(result_match.group(1)), 1), 50)
+        clean_query = re.sub(r"/(?:result|results|limit|count)\s+\d+", "", query_text, flags=re.IGNORECASE).strip()
+    else:
+        clean_query = query_text.strip()
+
+    if not clean_query:
+        return "ℹ️ Usage: `/search <keyword or #tag> [/result <1-50>]`"
+
     url = "https://api.raindrop.io/rest/v1/raindrops/0"
     headers = {"Authorization": f"Bearer {RAINDROP_TOKEN}"}
-    params = {"search": clean_query, "perpage": 5}
+    params = {"search": clean_query, "perpage": perpage}
     
     # NLP / Fuzzy Tag Matching
     all_tags = get_raindrop_tags()
@@ -144,7 +155,7 @@ def search_raindrop(query: str) -> str:
             items = resp.json().get("items", [])
             
             if items:
-                reply_text = f"🔍 Top results for '{clean_query}':\n\n"
+                reply_text = f"🔍 Top {len(items)} results for '{clean_query}':\n\n"
                 for idx, item in enumerate(items, 1):
                     title = item.get("title", "Untitled Bookmark")
                     link = item.get("link", "")
@@ -159,7 +170,7 @@ def search_raindrop(query: str) -> str:
                 reply_text = f"🤷‍♂️ No exact bookmarks found for '{clean_query}'.\n\n"
                 if recommended_tags:
                     reply_text += "💡 *Did you mean or try searching these tags?*\n"
-                    reply_text += "\n".join([f"• `/search #{t}`" for t in recommended_tags])
+                    reply_text += "\n".join([f"• `/search #{t} /result {perpage}`" for t in recommended_tags])
                 else:
                     reply_text += "💡 Try searching with a broader keyword or check your Raindrop tags."
                 return reply_text.strip()
@@ -580,7 +591,7 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
                 if len(parts) > 1 and parts[1].strip():
                     reply_telegram(chat_id, search_raindrop(parts[1].strip()))
                 else:
-                    reply_telegram(chat_id, "ℹ️ Usage: `/search <keyword or #tag>`")
+                    reply_telegram(chat_id, "ℹ️ Usage: `/search <keyword or #tag> [/result <1-50>]`")
                 return {"status": "ok"}
 
             # File upload processing
